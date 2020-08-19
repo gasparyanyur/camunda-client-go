@@ -379,7 +379,7 @@ func (e *ExternalTask) GetList(query map[string]string) ([]*ResExternalTask, err
 		return nil, err
 	}
 
-	if err := e.client.readJsonResponse(res, resp); err != nil {
+	if err := e.client.readJsonResponse(res, &resp); err != nil {
 		return nil, err
 	}
 

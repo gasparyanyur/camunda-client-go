@@ -109,7 +109,7 @@ func (p *Processor) AddHandler(topics *[]camunda_client_go.QueryFetchAndLockTopi
 		asyncResponseTimeout = &msValue
 	}
 
-	p.startPuller(camunda_client_go.QueryFetchAndLock{
+	go p.startPuller(camunda_client_go.QueryFetchAndLock{
 		WorkerId:             p.options.WorkerId,
 		MaxTasks:             p.options.MaxTasks,
 		UsePriority:          p.options.UsePriority,
@@ -119,39 +119,48 @@ func (p *Processor) AddHandler(topics *[]camunda_client_go.QueryFetchAndLockTopi
 }
 
 func (p *Processor) startPuller(query camunda_client_go.QueryFetchAndLock, handler Handler) {
-	//var tasksChan = make(chan *camunda_client_go.ResLockedExternalTask)
+	var tasksChan = make(chan *camunda_client_go.ResLockedExternalTask)
 
 	maxParallelTaskPerHandler := p.options.MaxParallelTaskPerHandler
 	if maxParallelTaskPerHandler < 1 {
 		maxParallelTaskPerHandler = 1
 	}
 
+	// create worker pool
+	for i := 0; i < maxParallelTaskPerHandler; i++ {
+		go p.runWorker(handler, tasksChan)
+	}
+
 	retries := 0
+	for {
+		tasks, err := p.client.ExternalTask.FetchAndLock(query)
 
-	tasks, err := p.client.ExternalTask.FetchAndLock(query)
-
-	fmt.Println("tasks", tasks)
-	if err != nil {
-		if retries < 60 {
-			retries += 1
+		if err != nil {
+			if retries < 60 {
+				retries += 1
+			}
+			p.logger(fmt.Errorf("failed pull: %s, sleeping: %d seconds", err, retries))
+			time.Sleep(time.Duration(retries) * time.Second)
+			continue
 		}
-		p.logger(fmt.Errorf("failed pull: %s, sleeping: %d seconds", err, retries))
-		time.Sleep(time.Duration(retries) * time.Second)
+		retries = 0
+
+		for _, task := range tasks {
+			tasksChan <- task
+		}
 		return
 	}
-	retries = 0
 
-	for _, task := range tasks {
-		p.runWorker(handler, task)
-	}
 
 }
 
-func (p *Processor) runWorker(handler Handler, task *camunda_client_go.ResLockedExternalTask) {
-	p.handle(&Context{
-		Task:   task,
-		client: p.client,
-	}, handler)
+func (p *Processor) runWorker(handler Handler, tasksChan chan *camunda_client_go.ResLockedExternalTask) {
+	for task := range tasksChan {
+		p.handle(&Context{
+			Task:   task,
+			client: p.client,
+		}, handler)
+	}
 }
 
 func (p *Processor) handle(ctx *Context, handler Handler) {
